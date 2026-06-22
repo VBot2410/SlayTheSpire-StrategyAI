@@ -1,0 +1,25 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments and Virtual Envs
+.venv/
+venv/
+ENV/
+env/
+
+# Slay the Spire Data / Run logs
+*.run
+*.json
+data/
+runs/
+*.7z
+*.zip
+*.rar
+*.tar
+*.gz
+
+# Operating system files
+.DS_Store
+Thumbs.db
