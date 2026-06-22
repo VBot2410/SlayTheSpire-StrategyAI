@@ -4,7 +4,7 @@
 [![Python 3.10+](https://shields.io)](https://python.org)
 [![LightGBM](https://shields.io)](https://github.com/lightgbm-org/LightGBM)
 
-An enterprise-grade, data-driven strategy decision engine and automation framework for *Slay the Spire*. By training specialized Gradient Boosted Decision Tree (GBDT) ensembles on tens of thousands of high-Ascension (A20) runs, this system acts as a real-time tactical co-pilot, calculating Softmax probabilities to recommend optimal card rewards or explicit skips.
+An enterprise-grade, data-driven strategy decision engine and automation framework for *Slay the Spire*. By training specialized Gradient Boosted Decision Tree (GBDT) ensembles on tens of thousands of high-Ascension (A10+) runs, this system acts as a real-time tactical co-pilot, calculating Softmax probabilities to recommend optimal card rewards or explicit skips.
 
 ---
 
