@@ -19,8 +19,8 @@ MAX_DECK_LEN = 60
 MAX_RELIC_LEN = 30
 
 # Scale this up as high as you want!
-TARGET_RUNS_LIMIT = 200
-QUALIFICATION_SAFETY_MULTIPLIER = 2.0
+TARGET_RUNS_LIMIT = 50000
+QUALIFICATION_SAFETY_MULTIPLIER = 4.0
 
 CHARACTER_MAP = {"ironclad": 0, "thesilent": 1, "defect": 2, "watcher": 3}
 STARTING_DECKS = {
@@ -163,100 +163,114 @@ def get_archive_file_list(archive_path):
     return filenames
 
 def run_transformer_pipeline():
-    if os.path.exists(TEMP_RAW_ROWS):
-        os.remove(TEMP_RAW_ROWS)
-    all_files = get_archive_file_list(SEVENZ_ARCHIVE_PATH)
-    raw_sample_size = min(int(TARGET_RUNS_LIMIT * QUALIFICATION_SAFETY_MULTIPLIER), len(all_files))
+    """
+    Single-pass architecture:
+    1. Extract 7z entries in memory.
+    2. Parse JSON -> Tokenize -> Write directly to final CSV.
+    No intermediate temporary files.
+    """
     
-    random.shuffle(all_files)
-    sample_targets = all_files[:raw_sample_size] 
-    
-    processed_count = 0
-    group_id = 0  # Default fallback for clean/new files
+    # --- PREPARE TARGET PATHS AND INPUTS ---
+    if not os.path.exists(SEVENZ_ARCHIVE_PATH):
+        raise FileNotFoundError(f"Archive not found: {SEVENZ_ARCHIVE_PATH}")
         
-    # --- DYNAMICALLY RESOLVE STARTING GROUP_ID ---
-    if os.path.exists(TRANSFORMER_OUTPUT_CSV) and os.path.getsize(TRANSFORMER_OUTPUT_CSV) > 0:
+    all_files = get_archive_file_list(SEVENZ_ARCHIVE_PATH)
+    if not all_files:
+        print("No JSON files found in archive.")
+        return
+
+    # Sample target files cleanly
+    raw_sample_size = min(int(TARGET_RUNS_LIMIT * QUALIFICATION_SAFETY_MULTIPLIER), len(all_files))
+    random.shuffle(all_files)
+    sample_targets = all_files[:raw_sample_size]
+    
+    # Determine if we need to write structural CSV headers
+    write_header = not os.path.exists(TRANSFORMER_OUTPUT_CSV) or os.path.getsize(TRANSFORMER_OUTPUT_CSV) == 0
+    
+    # Get final group_id to resume sequence if file already has historical records
+    current_group_id = 0
+    if not write_header:
         try:
             with open(TRANSFORMER_OUTPUT_CSV, "rb") as f:
-                # Seek to the end of the file to scan backward efficiently
                 f.seek(0, os.SEEK_END)
                 end_pos = f.tell()
                 buffer_size = 1024
-                
-                # Slide backward through the byte buffer to locate the true final newline
                 if end_pos > buffer_size:
                     f.seek(end_pos - buffer_size)
                     bytes_data = f.read(buffer_size)
                 else:
                     f.seek(0)
                     bytes_data = f.read()
-                    
-                lines = bytes_data.split(b"\n")
-                # Drop trailing empty line splits if they exist
-                last_line = lines[-1] if lines[-1] else lines[-2]
                 
-                # Split the raw CSV string columns to grab the very first token (group_id)
+                lines = bytes_data.split(b"\n")
+                last_line = lines[-1] if lines[-1] else lines[-2]
                 last_group_id_str = last_line.split(b",")[0].decode('utf-8')
                 
-                # Ensure the parsed item isn't the string header text block "group_id"
                 if last_group_id_str.isdigit():
-                    group_id = int(last_group_id_str) + 1
-                    print(f"Resuming pipeline cleanly. Last found group_id was {group_id - 1}. Set next start index to: {group_id}")
+                    current_group_id = int(last_group_id_str) + 1
+                    print(f"Resuming pipeline. Last group_id was {current_group_id - 1}. Starting at: {current_group_id}")
                 else:
-                    print("Found file header but no rows. Starting group_id at: 0")
+                    print("Found header only. Starting group_id at: 0")
         except Exception as e:
-            print(f"Warning: Failed reading tail metadata context ({e}). Defaulting group_id to: 0")
-    else:
-        print("No prior dataset detected or file is empty. Initializing brand new group_id sequence at: 0")
+            print(f"Warning: Could not resume group_id ({e}). Starting at: 0")
 
-        
-    print(f"Starting Transformer Sequence Pipeline. Target: {TARGET_RUNS_LIMIT} archive units.")
-    
+    total_runs_processed = 0
+    print(f"Starting Single-Pass Transformer Pipeline. Target: {TARGET_RUNS_LIMIT} runs.")
+    print(f"Source files to process: {len(sample_targets)} (shuffled sample).")
+
     # -------------------------------------------------------------------------
-    # PASS 1: EXTRACT RUN CHRONOLOGY AND LOG SEMANTIC DENSE STRINGS
+    # PERSISTENT FILE SCOPE: Open once, write continuous rows from RAM streams
     # -------------------------------------------------------------------------
-    with open(TEMP_RAW_ROWS, mode="w", newline="", encoding="utf-8") as temp_file:
-        writer = csv.writer(temp_file)
+    with open(TRANSFORMER_OUTPUT_CSV, "a", newline="", encoding="utf-8") as csv_out:
+        writer = csv.writer(csv_out)
         
+        if write_header:
+            headers = ["group_id", "floor", "character_class", "ascension_level", "gold", "hp_ratio", "relic_seq", "deck_seq", "candidate_card_id", "is_virtual_skip", "target"]
+            writer.writerow(headers)
+            print("Written new CSV headers.")
+
+        # Main iteration path over all individual archive entries
         for file_path in sample_targets:
-            if processed_count >= TARGET_RUNS_LIMIT:
+            if total_runs_processed >= TARGET_RUNS_LIMIT:
+                print(f"Reached target limit ({TARGET_RUNS_LIMIT} runs). Stopping.")
                 break
                 
+            proc = None
             try:
-                # 1. Decompress a single file out to stdout (processed directly in RAM)
+                # 1. Stream single file to RAM using Popen to prevent process blocking locks
                 cmd = [SEVEN_ZIP_CMD, "e", SEVENZ_ARCHIVE_PATH, file_path, "-so", "-y"]
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                if proc.returncode != 0 or not proc.stdout:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                
+                stdout_data, _ = proc.communicate()
+                if proc.returncode != 0 or not stdout_data:
                     continue
                     
-                file_items = orjson.loads(proc.stdout)
-                del proc  # Free process memory immediately
+                file_items = orjson.loads(stdout_data)
+                del stdout_data  # Instantly flush raw bytes from memory
                 
                 if not isinstance(file_items, list):
                     file_items = [file_items]
                     
+                # 2. Process each run in the extracted file structure
                 for item in file_items:
-                    if processed_count >= TARGET_RUNS_LIMIT:
+                    if total_runs_processed >= TARGET_RUNS_LIMIT:
                         break
 
-                    # Isolate the run event payload
                     data = item.get("event") if isinstance(item, dict) and "event" in item else item
                     if not isinstance(data, dict):
                         continue
                         
-                    # Filter: Minimum floor reached
-                    if data.get("floor_reached", 1) < MIN_FLOOR_THRESHOLD:
+                    # Pre-flight game filters
+                    floor_reached = int(data.get("floor_reached", 1))
+                    if floor_reached < MIN_FLOOR_THRESHOLD:
                         continue
                         
-                    # Filter: Ascension level threshold
                     ascension = int(data.get("ascension_level", 0))
                     if ascension < MIN_ASCENSION_LEVEL:
                         continue
                         
-                    # Filter: Valid character check
                     raw_char_str = data.get("character_chosen", "")
                     char_str = normalize_game_string(raw_char_str)
-                    
                     if char_str not in CHARACTER_MAP:
                         continue
                         
@@ -265,13 +279,22 @@ def run_transformer_pipeline():
                     if not card_choices:
                         continue
 
-                    processed_count += 1
+                    # WIN-GATE: Filter out sub-optimal play. Only keep elite wins or deep runs!
+                    is_victory = bool(data.get("victory", False))
+                    if not is_victory and floor_reached < 50:
+                        continue
+
+                    # Mark this run as qualified
+                    total_runs_processed += 1
+
+                    if total_runs_processed % 100 == 0 and total_runs_processed > 0:
+                        print(f" -> Processed {total_runs_processed} total run logs...")
                     
-                    # Timelines metrics
+                    # --- RUN STATE SETUP ---
                     gold_timeline = data.get("gold_per_floor", [])
                     hp_timeline = data.get("hp_per_floor", [])
                     max_hp_timeline = data.get("max_hp_per_floor", [])
-                        
+                    
                     current_relics = set()
                     relics_by_floor = {
                         int(r["floor"]): normalize_game_string(r.get("key", "")) 
@@ -279,131 +302,108 @@ def run_transformer_pipeline():
                         if "floor" in r and r.get("floor") is not None
                     }
                     
-                    # --- Optimization: O(1) Deck Tracking Setup ---
-                    # Instead of a flat list, we maintain a live-updating counter map
                     deck_snapshot = {}
                     for card in STARTING_DECKS.get(char_id, []):
                         deck_snapshot[card] = deck_snapshot.get(card, 0) + 1
+
+                    if ascension >= 10:
+                        deck_snapshot["ascendersbane"] = 1
                     
                     card_choices.sort(key=lambda x: x.get("floor", 0))
                     current_floor = 1
                     
-                    # --- Optimization: RAM CSV Buffer ---
-                    # Accumulate rows in memory per file, writing in one single bulk operation
+                    # Cache compiled text rows for this individual log asset file
                     file_rows = []
                     
+                    # --- PROCESS CHOICES FOR THIS RUN ---
                     for choice in card_choices:
                         floor = int(choice.get("floor", 0))
                         
-                        # Catch up on any relics acquired between choices
-                        for f_idx in range(current_floor, floor + 1):
+                        # Fix: Prevent Floor 0 from resetting current_floor backward below 1
+                        # This protects relic tracking sequence ranges from corrupting or duplicating
+                        start_range = min(current_floor, floor)
+                        for f_idx in range(start_range, floor + 1):
                             if f_idx in relics_by_floor:
                                 current_relics.add(relics_by_floor[f_idx])
-                        current_floor = floor
+                        current_floor = max(current_floor, floor)
                         
-                        # Process metrics indexes securely
+                        # Process metrics indexes securely (Guards against Floor 0 negative indexes)
                         timeline_idx = floor - 1
-                        gold_val = gold_timeline[timeline_idx] if timeline_idx < len(gold_timeline) else 99
-                        curr_hp = hp_timeline[timeline_idx] if timeline_idx < len(hp_timeline) else 70
-                        max_hp = max_hp_timeline[timeline_idx] if timeline_idx < len(max_hp_timeline) else 70
+                        
+                        if 0 <= timeline_idx < len(gold_timeline):
+                            gold_val = gold_timeline[timeline_idx]
+                        else:
+                            gold_val = 99
+
+                        if 0 <= timeline_idx < len(hp_timeline):
+                            curr_hp = hp_timeline[timeline_idx]
+                        else:
+                            curr_hp = 70
+
+                        if 0 <= timeline_idx < len(max_hp_timeline):
+                            max_hp = max_hp_timeline[timeline_idx]
+                        else:
+                            max_hp = 70
+                            
                         hp_ratio = round(float(curr_hp) / float(max_hp), 3) if max_hp > 0 else 1.0
                         
-                        # Sanitize card identifiers (strip upgrade level '+1')
+                        # Candidate Cards
                         raw_picked = choice.get("picked", "skip")
                         picked = normalize_game_string(raw_picked) if raw_picked != "skip" else "skip"
                         not_picked = [normalize_game_string(card) for card in choice.get("not_picked", [])]
                         
-                        # --- Optimization: JSON-serialize exactly once per floor ---
-                        relics_str = orjson.dumps(list(current_relics)).decode('utf-8')
-                        deck_str = orjson.dumps(deck_snapshot).decode('utf-8')
+                        # --- TOKENIZE IMMEDIATELY (Single Pass Logic) ---
+                        # 1. Relic Sequence Embedding Vectors (+1 handles PyTorch padding alignment)
+                        unknown_relic_idx = RELIC_INDICES["unknownrelic"]
+                        relic_seq = [(RELIC_INDICES[r] + 1) if r in RELIC_INDICES else (unknown_relic_idx + 1) for r in current_relics][:MAX_RELIC_LEN]
+                        relic_seq += [0] * (MAX_RELIC_LEN - len(relic_seq))
+                        relic_seq_str = orjson.dumps(relic_seq).decode('utf-8')
                         
-                        # Construct flattened ML rows for modeling
+                        # 2. Deck Sequence Embedding Vectors
+                        raw_deck_list = []
+                        for card, count in deck_snapshot.items():
+                            if card in CARD_INDICES:
+                                card_token = CARD_INDICES[card] + 1
+                                raw_deck_list.extend([card_token] * count)
+                        deck_seq = raw_deck_list[:MAX_DECK_LEN]
+                        deck_seq += [0] * (MAX_DECK_LEN - len(deck_seq))
+                        deck_seq_str = orjson.dumps(deck_seq).decode('utf-8')
+                        
+                        # --- CONSTRUCT FLATTENED GENERATIVE ROWS ---
                         if picked != "skip":
-                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, picked, 0, 1])
-                            for npc in not_picked:
-                                file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
-                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "skip", 1, 0])
+                            picked_id = CARD_INDICES.get(picked, 0) + 1
+                            file_rows.append([current_group_id, floor, char_id, ascension, gold_val, hp_ratio, relic_seq_str, deck_seq_str, picked_id, 0, 1])
                             
-                            # --- Optimization: Fast O(1) deck update ---
+                            for npc in not_picked:
+                                npc_id = CARD_INDICES.get(npc, 0) + 1
+                                file_rows.append([current_group_id, floor, char_id, ascension, gold_val, hp_ratio, relic_seq_str, deck_seq_str, npc_id, 0, 0])
+                            
+                            file_rows.append([current_group_id, floor, char_id, ascension, gold_val, hp_ratio, relic_seq_str, deck_seq_str, 0, 1, 0]) # Virtual skip row
+                            
+                            # Increment deck counter snapshot properties live
                             deck_snapshot[picked] = deck_snapshot.get(picked, 0) + 1
                         else:
                             for npc in not_picked:
-                                file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
-                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "skip", 1, 1])
+                                npc_id = CARD_INDICES.get(npc, 0) + 1
+                                file_rows.append([current_group_id, floor, char_id, ascension, gold_val, hp_ratio, relic_seq_str, deck_seq_str, npc_id, 0, 0])
                             
-                        group_id += 1
-                    
-                    # --- Optimization: Single SSD Write Operation per Run File ---
+                            file_rows.append([current_group_id, floor, char_id, ascension, gold_val, hp_ratio, relic_seq_str, deck_seq_str, 0, 1, 1])
+                            
+                        # Increment tracking choice screens identifiers
+                        current_group_id += 1
+                        
+                    # Bulk flush rows for this file straight to SSD OS cache buffers
                     if file_rows:
                         writer.writerows(file_rows)
                     
-                if processed_count % 10 == 0:
-                    print(f" -> Logged {processed_count} JSON entries...")
-                    
-            except Exception as e:
-                # Silently catch malformed file errors to keep parser moving
+            except (orjson.JSONDecodeError, KeyError, ValueError):
                 continue
+            except Exception as system_err:
+                if proc:
+                    proc.kill()
+                raise system_err
 
-    # -------------------------------------------------------------------------
-    # PASS 2: CONVERT TO TRANSfORMER SEQUENCE TOKENS AND WRITE FINAL DATASET
-    # -------------------------------------------------------------------------
-    print(f"\nVectorizing intermediate file into Transformer sequence tokens...")
-    
-    headers = ["group_id", "floor", "character_class", "ascension_level", "gold", "hp_ratio", "relic_seq", "deck_seq", "candidate_card_id", "is_virtual_skip", "target"]
-    
-    # Check if the output file already exists and has data inside it
-    file_exists_and_not_empty = os.path.exists(TRANSFORMER_OUTPUT_CSV) and os.path.getsize(TRANSFORMER_OUTPUT_CSV) > 0
-
-    with open(TEMP_RAW_ROWS, "r", encoding="utf-8") as temp_in, open(TRANSFORMER_OUTPUT_CSV, "a", newline="", encoding="utf-8") as csv_out:
-        reader = csv.reader(temp_in)
-        writer = csv.writer(csv_out)
-        # Only write headers if the file is empty/new
-        if not file_exists_and_not_empty:
-            writer.writerow(headers)
-        
-        for row in reader:
-            group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_json, deck_json, candidate, is_virtual, target = row
-            
-            current_relics = orjson.loads(relics_json)
-            deck_snapshot = orjson.loads(deck_json)
-            
-            # --- TOKENIZE RELICS WITH ID SHIFT (0 = Padding Token) ---
-            # If item is found, assign token = index + 1. Otherwise skip.
-            unknown_relic_idx = RELIC_INDICES["unknownrelic"]
-            relic_seq = [(RELIC_INDICES[r] + 1) if r in RELIC_INDICES else (unknown_relic_idx + 1) for r in current_relics][:MAX_RELIC_LEN]
-            # Pad array with zeros to match static matrix size requirement
-            relic_seq += [0] * (MAX_RELIC_LEN - len(relic_seq))
-            
-            # --- UNPACK BAG-OF-WORDS DICT BACK INTO A SEQUENTIAL LIST ---
-            raw_deck_list = []
-            for card, count in deck_snapshot.items():
-                if card in CARD_INDICES:
-                    card_token = CARD_INDICES[card] + 1  # ID Shift for padding
-                    raw_deck_list.extend([card_token] * count)
-            
-            deck_seq = raw_deck_list[:MAX_DECK_LEN]
-            deck_seq += [0] * (MAX_DECK_LEN - len(deck_seq))
-            
-            # --- TOKENIZE CANDIDATE ITEM ---
-            unknown_idx = CARD_INDICES["unknowncard"]
-            if candidate not in CARD_INDICES:
-                print(f"DEBUG: Unmapped/Non-Vanilla Card encountered: '{candidate}'")
-            candidate_id = CARD_INDICES.get(candidate, unknown_idx) + 1  # Shifts fallback default to 0
-            
-            # Stringify lists to protect the interior comma tokens during CSV writing
-            relic_seq_str = orjson.dumps(relic_seq).decode('utf-8')
-            deck_seq_str = orjson.dumps(deck_seq).decode('utf-8')
-            
-            flat_row = [
-                group_id, floor, char_id, int(ascension), int(gold_val), float(hp_ratio),
-                relic_seq_str, deck_seq_str, candidate_id, int(is_virtual), int(target)
-            ]
-            writer.writerow(flat_row)
-            
-    if os.path.exists(TEMP_RAW_ROWS):
-        os.remove(TEMP_RAW_ROWS)
-        
-    print(f"Pipeline finished safely! Transformer dataset stored at: {TRANSFORMER_OUTPUT_CSV}")
+    print(f"\nProcessing complete. No temp files used. Output written cleanly to: {TRANSFORMER_OUTPUT_CSV}")
 
 if __name__ == "__main__":
     run_transformer_pipeline()
