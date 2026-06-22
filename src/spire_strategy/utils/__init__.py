@@ -1,0 +1,1 @@
+from spire_strategy.utils.profiling import SpireModelProfiler

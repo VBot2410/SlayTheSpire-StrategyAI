@@ -1,25 +1,25 @@
 import lightgbm as lgb
 import numpy as np
 import os
-
 # IMPORT YOUR DEFINITIVE VOCABULARY ARRAYS SO SHAPES NEVER MISMATCH
 import spire_strategy.data.pipeline as config
 
 class LiveSpireRecommender:
     def __init__(self, model_dir="."):
-        """Loads and initializes all three Act-Specific LightGBM models."""
+        """
+        Loads and initializes all three Act-Specific Multiclass LightGBM models.
+        """
         self.models = {
             "act1": lgb.Booster(model_file=os.path.join(model_dir, "spire_lgb_act_1.txt")),
             "act2": lgb.Booster(model_file=os.path.join(model_dir, "spire_lgb_act_2.txt")),
             "act3": lgb.Booster(model_file=os.path.join(model_dir, "spire_lgb_act_3.txt"))
         }
         
-        # Dynamic Vocabulary Alignment matching your exact training configuration
+        # Dynamic Vocabulary Alignment matching your training dataset footprint
         self.card_vocab_size = len(config.ALL_VANILLA_CARDS)
         self.relic_vocab_size = len(config.ALL_VANILLA_RELICS)
         
-        print(f"[AI] Act-Split Models Successfully Loaded into Memory!")
-        print(f"[AI] Constraints -> Cards Vocab: {self.card_vocab_size} | Relics Vocab: {self.relic_vocab_size}")
+        print(f"[AI] Multiclass Engine Init. Cards: {self.card_vocab_size} | Relics: {self.relic_vocab_size}")
 
     def _select_model(self, floor):
         """Routes the query to the correct specialized ranker based on game progression."""
@@ -31,28 +31,28 @@ class LiveSpireRecommender:
             return self.models["act3"]
 
     def get_recommendation(self, current_run_metrics, active_deck_list, active_relics_list, card_candidates):
-        """Processes real-time state parameters into perfectly shape-aligned matrices."""
+        """
+        Translates real-time state metrics into a single horizontal multiclass vector.
+        Natively aligned to a pure 0-indexed architecture.
+        """
         floor = int(current_run_metrics["floor"])
         bst = self._select_model(floor)
 
-        # 1. Build the multi-hot Relic context vector (Mirroring training loop setup)
-        relic_vector = np.zeros(self.relic_vocab_size + 1, dtype=np.int8)
+        # 1. Reconstruct baseline multi-hot relics and frequency-count decks (Direct 0-indexing)
+        relic_vector = np.zeros(self.relic_vocab_size + 1, dtype=np.int16)
         for r in active_relics_list:
-            if r > 0 and r <= self.relic_vocab_size:
+            if 0 <= r <= self.relic_vocab_size: 
                 relic_vector[r] = 1
 
-        # 2. Reconstruct deck frequency count vector with training shift (+1 format)
         deck_vector = np.zeros(self.card_vocab_size + 1, dtype=np.int16)
         for c in active_deck_list:
-            shifted_deck_id = c + 1
-            if 0 < shifted_deck_id <= self.card_vocab_size:
-                deck_vector[shifted_deck_id] += 1
+            if 0 <= c <= self.card_vocab_size: 
+                deck_vector[c] += 1
 
-        # Calculate base structural inventory aggregate sums
-        total_relics_owned = float(relic_vector.sum())
+        total_relics = float(relic_vector.sum())
         total_deck_size = float(deck_vector.sum())
 
-        # Base environment metrics
+        # 2. Build our environmental slice matching X_metrics
         base_metrics = [
             float(floor),
             float(current_run_metrics["character_class"]),
@@ -61,64 +61,75 @@ class LiveSpireRecommender:
             float(current_run_metrics["hp_ratio"])
         ]
 
-        # 3. Assemble competing choices (The candidates on screen + 1 virtual skip option)
-        all_options = list(card_candidates) + [0]
-        rows = []
-
-        for cand_id in all_options:
-            # FIX: Training script uses raw cand_id for candidate_matrix indexing!
-            # It maps skip directly to index 0.
-            is_virtual_skip = 1.0 if cand_id == 0 else 0.0
-            
-            # Contextual Feature: How many copies of THIS card are already in our deck?
-            # Shifted ID is used ONLY when querying the frequency count vector
-            shifted_cand_id = cand_id + 1
-            if cand_id > 0 and 0 < shifted_cand_id <= self.card_vocab_size:
-                candidate_deck_count = float(deck_vector[shifted_cand_id])
-            else:
-                candidate_deck_count = 0.0
-
-            # Reconstruct One-Hot Candidate Row vector using raw cand_id (matching training matrix layout)
-            candidate_row = np.zeros(self.card_vocab_size + 1, dtype=np.int8)
-            if 0 <= cand_id <= self.card_vocab_size:
-                candidate_row[cand_id] = 1
-
-            # Compute advanced shape-aligned interaction matrices
-            cand_relic_count_interaction = candidate_row.astype(np.float32) * total_relics_owned
-            cand_deck_size_interaction = candidate_row.astype(np.float32) * total_deck_size
-
-            # FIX: Adjusted horizontal sequence stack order to match the training script's array exactly
-            full_row = np.hstack([
-                base_metrics, 
-                [is_virtual_skip],
-                [candidate_deck_count], 
-                candidate_row, 
-                relic_vector, 
-                deck_vector,
-                cand_relic_count_interaction,
-                cand_deck_size_interaction
-            ])
-            rows.append(full_row)
-
-        # 4. Process predictions
-        X_infer = np.vstack(rows)
-        scores = bst.predict(X_infer)
-
-        # DEBUG LOGGING: Print everything the model is thinking
-        print("\n--- [AI CHOICE EVALUATION] ---")
-        for idx, opt_id in enumerate(all_options):
-            if opt_id == 0:
-                print(f" -> Option [SKIP]            | Utility Score: {scores[idx]:.4f}")
-            else:
-                c_name = config.ALL_VANILLA_CARDS[opt_id]
-                print(f" -> Option [{c_name.upper():<17}] | Utility Score: {scores[idx]:.4f}")
-        print("-------------------------------\n")
+        # 3. Form our fixed 4-slot choice window layout (3 card candidates max + 1 skip option)
+        # Any card candidate offered on screen goes into slots 0-2. Index 0 is natively the skip token code.
+        all_options = list(card_candidates)
+        while len(all_options) < 3:
+            all_options.append(0) # Pad empty options with native 0-index skip tokens
+        all_options.append(0)    # Slot index 3 is always explicitly reserved for the Skip All action
         
-        best_idx = np.argmax(scores)
-        chosen_option = all_options[best_idx] 
+        # Clip down to exact max boundary constraints
+        final_slots = all_options[:4]
 
-        if chosen_option == 0:
-            return f"❌ AI ADVICE: SKIP ALL CARDS (Skip Rank Utility: {scores[best_idx]:.4f})", 0
+        candidate_cards = np.zeros(4, dtype=np.int32)
+        candidate_deck_counts = np.zeros(4, dtype=np.float32)
+        is_skip_mask = np.zeros(4, dtype=np.float32)
+
+        for slot, cand_id in enumerate(final_slots):
+            candidate_cards[slot] = cand_id
+            is_skip_mask[slot] = 1.0 if cand_id == 0 else 0.0
+            
+            # Direct vocabulary lookup matching your exact dataset builder grouping format
+            if 0 <= cand_id <= self.card_vocab_size:
+                candidate_deck_counts[slot] = float(deck_vector[cand_id])
+
+        # 4. Perfectly align horizontally matching your stacked hstack training pipeline shape
+        full_row = np.hstack([
+            base_metrics,               # 5 features
+            is_skip_mask,               # 4 features
+            candidate_deck_counts,      # 4 features
+            candidate_cards,            # 4 features
+            relic_vector,               # relic_vocab_size + 1 features
+            deck_vector,                # card_vocab_size + 1 features
+            [total_relics],             # 1 feature
+            [total_deck_size]           # 1 feature
+        ])
+
+        # 5. Execute matrix scoring
+        X_infer = np.array([full_row], dtype=np.float32)
+        probabilities = bst.predict(X_infer)[0] # Extract the 4-element class probability array
+
+        # Find the highest scoring horizontal probability slot index
+        best_slot = np.argmax(probabilities)
+        chosen_option_id = final_slots[best_slot]
+
+        # 6. Format terminal feedback logs back to the 3-class CLI framework
+        if chosen_option_id == 0 or best_slot == 3:
+            return f"❌ AI ADVICE: SKIP ALL CARDS (Slot {best_slot} Softmax Confidence: {probabilities[best_slot]:.4f})", 0
         else:
-            chosen_name = config.ALL_VANILLA_CARDS[chosen_option]
-            return f"✅ AI ADVICE: CHOOSE '{chosen_name.upper()}' (Card ID: {chosen_option} | Prediction Score: {scores[best_idx]:.4f})", chosen_option
+            chosen_name = config.ALL_VANILLA_CARDS[chosen_option_id]
+            return f"✅ AI ADVICE: TAKE '{chosen_name.upper()}' (Slot {best_slot} | Probability: {probabilities[best_slot]:.4f})", chosen_option_id
+
+if __name__ == "__main__":
+    recommender = LiveSpireRecommender(model_dir=".")
+
+    # Create a typical Act 2 Defect environment state scenario
+    mock_metrics = {
+        "floor": 21,
+        "character_class": 2.0, # DEFECT class encoding index
+        "ascension_level": 20.0,
+        "gold": 120.0,
+        "hp_ratio": 0.65
+    }
+    
+    # Simulate a mid-sized power scaling deck setup 
+    mock_deck = [34, 34, 112, 112, 5, 6, 7] 
+    mock_relics = [1, 14, 88] # Ingot / standard relic indices
+    
+    # Offer a highly impactful class card vs garbage starter variants
+    mock_candidates = [169, 1, 2] # e.g., Defragment vs Basic Strike/Defend
+    
+    advice, choice = recommender.get_recommendation(mock_metrics, mock_deck, mock_relics, mock_candidates)
+    print("\n--- [LIVE CLI ENGINE INTEGRATION TEST] ---")
+    print(advice)
+    print("------------------------------------------\n")
