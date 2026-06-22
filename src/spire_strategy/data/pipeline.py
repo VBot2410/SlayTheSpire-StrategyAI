@@ -8,20 +8,26 @@ import orjson
 SEVENZ_ARCHIVE_PATH = os.getenv("SPIRE_DATA_ARCHIVE", "archive.7z")
 OUTPUT_CSV = "dataset.csv"
 TEMP_RAW_ROWS = "dataset.tmp"
+TRANSFORMER_OUTPUT_CSV = "slay_the_spire_transformer.csv"
 
 MIN_FLOOR_THRESHOLD = 6
 MIN_ASCENSION_LEVEL = 10
 
-# Scale this up as high as you want (even 40000+)
-TARGET_RUNS_LIMIT = 40000
+# --- SHAPE CONSTRAINTS FOR PYTORCH TENSORS ---
+# Caps ensure consistent static sequence lengths for mini-batching
+MAX_DECK_LEN = 60   
+MAX_RELIC_LEN = 30
+
+# Scale this up as high as you want!
+TARGET_RUNS_LIMIT = 200
 QUALIFICATION_SAFETY_MULTIPLIER = 2.0
 
-CHARACTER_MAP = {"IRONCLAD": 0, "THE_SILENT": 1, "DEFECT": 2, "WATCHER": 3}
+CHARACTER_MAP = {"ironclad": 0, "thesilent": 1, "defect": 2, "watcher": 3}
 STARTING_DECKS = {
-    0: ["Strike_R"] * 5 + ["Defend_R"] * 4 + ["Bash"],
-    1: ["Strike_G"] * 5 + ["Defend_G"] * 5 + ["Neutralize", "Survivor"],
-    2: ["Strike_B"] * 4 + ["Defend_B"] * 4 + ["Zap", "Dualcast"],
-    3: ["Strike_P"] * 4 + ["Defend_P"] * 4 + ["Eruption", "Vigilance"]
+    0: ["striker"] * 5 + ["defendr"] * 4 + ["bash"],
+    1: ["strikeg"] * 5 + ["defendg"] * 5 + ["neutralize", "survivor"],
+    2: ["strikeb"] * 4 + ["defendb"] * 4 + ["zap", "dualcast"],
+    3: ["strikep"] * 4 + ["defendp"] * 4 + ["eruption", "vigilance"]
 }
 
 # =========================================================================
@@ -29,80 +35,92 @@ STARTING_DECKS = {
 # =========================================================================
 # Explicitly defining cards and relics prevents mid-run column drift bottlenecks.
 ALL_VANILLA_CARDS = [
-    "SKIP", "Strike_R", "Defend_R", "Bash", "Strike_G", "Defend_G", "Neutralize", "Survivor",
-    "Strike_B", "Defend_B", "Zap", "Dualcast", "Strike_P", "Defend_P", "Eruption", "Vigilance",
-    "Anger", "Armaments", "BodySlam", "Clash", "Cleave", "Clothesline", "Flex", "Havoc", "Headbutt",
-    "HeavyBlade", "IronWave", "PerfectedStrike", "PommelStrike", "ShrugItOff", "SwordBoomerang", 
-    "ThunderClap", "TwinStrike", "WildStrike", "BattleTrance", "Bloodletting", "BurningBarrier", 
-    "Carnage", "Combust", "DarkEmbrace", "Disarm", "DualWield", "Entrench", "Evolve", "FeelNoPain", 
-    "FireBreathing", "FlameBarrier", "GhostlyArmor", "Hemokinesis", "Immolate", "Inflame", 
-    "Intimidate", "Metallicize", "PowerThrough", "Pummel", "Rage", "Rampage", "RecklessCharge", 
-    "Rupture", "SearingBlow", "SecondWind", "SeeingRed", "Shockwave", "SpotWeakness", "Uppercut", 
-    "Whirlwind", "Barricade", "Berserk", "Bludgeon", "Brutality", "Corruption", "DemonForm", 
-    "DoubleTap", "Exhume", "Feed", "FiendFire", "Immolate", "Impervious", "Juggernaut", "LimitBreak", 
-    "Offering", "Reaper", "Bane", "DaggerSpray", "DaggerThrow", "DeadlyPoison", "Deflect", 
-    "DodgeAndRoll", "FlyingKnee", "Outmaneuver", "PiercingWail", "PoisonedStab", "Prepared", 
-    "QuickSlash", "Slice", "SneakyStrike", "SuckerPunch", "Acrobatics", "Backflip", "Blur", 
-    "BouncingFlask", "CalculatedGamble", "Caltrops", "Catalyst", "Choke", "Dash", "Distraction", 
-    "EndlessAgony", "Eviscerate", "Expertise", "Flechettes", "Footwork", "HeelHook", "InfiniteBlades", 
-    "LegSweep", "Malaise", "MasterfulStab", "NoxiousFumes", "Outmaneuver", "Predator", "RiddleWithHoles", 
-    "Skewer", "Terror", "WellLaidPlans", "A Thousand Cuts", "Adrenaline", "AfterImage", "Alchemize", 
-    "BulletTime", "Burst", "DieDieDie", "Doppelganger", "Envenom", "GlassKnife", "GrandFinale", 
-    "Grand Finale", "Malaise", "PhantasmalKiller", "Nightmare", "ToolsOfTheTrade", "StormOfSteel", 
-    "Unload", "WraithForm", "BallLightning", "Barrage", "BeamCell", "ChargeBattery", "Claw", 
-    "ColdSnap", "CompilingDriver", "Coolheaded", "Gash", "GoForTheEyes", "Hologram", "Leap", 
-    "Rebound", "SteamBarrier", "SweepingBeam", "TURBO", "Aggregate", "AutoShields", "Blizzard", 
-    "BootSequence", "Chill", "Consume", "Defragment", "DoomAndGloom", "DoubleEnergy", "Electrodynamics", 
-    "FTL", "ForceField", "Fusion", "GeneticAlgorithm", "Heatsinks", "HelloWorld", "Loop", 
-    "Melter", "Overclock", "Recycle", "ReinforcedBody", "Reprogram", "Riptide", "Scrape", 
-    "Skim", "StaticDischarge", "Storm", "Sunder", "Tempest", "WhiteNoise", "AllForOne", 
-    "Amplify", "BiasedCognition", "Buffer", "CoreSurge", "CreativeAI", "EchoForm", "Fission", 
-    "Hyperbeam", "MachineLearning", "MeteorStrike", "Multi-Cast", "Rainbow", "Reboot", "Seek", 
-    "ThunderStrike", "Bow", "CrushJoints", "FlurryOfBlows", "FlyingSleeves", "FollowUp", 
-    "JustLucky", "SashWhip", "ThirdEye", "CutThroughFate", "EmptyBody", "EmptyFist", "Evaluating", 
-    "Proclaim", "PressurePoints", "Protect", "Crescendo", "Tranquility", "Alpha", "BattleHymn", 
-    "CarveReality", "Collect", "Conclude", "DeceiveReality", "Devotion", "ForeignInfluence", 
-    "Indignation", "InnerPeace", "LikeWater", "Meditation", "MentalFortress", "Nirvana", 
-    "Perseverance", "Pray", "ReachHeaven", "RegretfulFists", "Sanctity", "SimmeringFury", 
-    "Swivel", "TalkToTheHand", "Tantrum", "WaveOfTheHand", "WavesOfTheHand", "Weave", "WindmillStrike", 
-    "Worship", "WreathOfFlame", "Blasphemy", "Brilliance", "ConjureBlade", "DeusExMachina", 
-    "DevaForm", "Establishment", "Fasting", "LessonLearned", "MasterReality", "Omniscience", 
-    "Ragnarok", "Scrawl", "SpiritShield", "Wish", "Apparition", "Bite", "Blind", "DarkShackles", 
-    "DeepBreath", "Discovery", "DramaticEntrance", "Enlightenment", "Finesse", "FlashOfSteel", 
-    "Forethought", "GoodInstincts", "HandOfGreed", "Impatience", "JackOfAllTrades", "Madness", 
-    "MindBlast", "Panacea", "Panache", "Purity", "SadisticNature", "SecretTechnique", "SecretWeapon", 
-    "SwiftStrike", "ThinkingAhead", "Transmutation", "Violence", "Chrysalis", "Magnetism", 
-    "Mayhem", "Metamorphosis", "MasterOfStrategy", "TheBomb", "Clumsy", "Decay", "Doubt", 
-    "Injury", "Normality", "Pain", "Regret", "Shame", "Writhe", "Parasite", "Necronomicurse", 
-    "CurseOfTheBell", "AscendersBane", "Slimed", "Void", "Dazed", "Wound", "Burn", "J.A.X.", "UNKNOWN_CARD"
+    "skip", "striker", "defendr", "bash", "strikeg", "defendg", "neutralize", "survivor",
+    "strikeb", "defendb", "zap", "dualcast", "strikep", "defendp", "eruption", "vigilance",
+    "anger", "armaments", "bodyslam", "clash", "cleave", "clothesline", "flex", "havoc", "headbutt",
+    "heavyblade", "ironwave", "perfectedstrike", "pommelstrike", "shrugitoff", "swordboomerang", 
+    "thunderclap", "twinstrike", "wildstrike", "battletrance", "bloodletting", "burningbarrier", 
+    "carnage", "combust", "darkembrace", "disarm", "dualwield", "entrench", "evolve", "feelnopain",
+    "firebreathing", "flamebarrier", "ghostlyarmor", "hemokinesis", "immolate", "inflame", 
+    "intimidate", "metallicize", "powerthrough", "pummel", "rage", "rampage", "recklesscharge", 
+    "rupture", "searingblow", "secondwind", "seeingred", "shockwave", "spotweakness", "uppercut", 
+    "whirlwind", "barricade", "berserk", "bludgeon", "brutality", "corruption", "demonform", 
+    "doubletap", "exhume", "feed", "fiendfire", "impervious", "juggernaut", "limitbreak", 
+    "offering", "reaper", "bane", "daggerspray", "daggerthrow", "deadlypoison", "deflect", 
+    "dodgeandroll", "flyingknee", "outmaneuver", "piercingwail", "poisonedstab", "prepared", 
+    "quickslash", "slice", "sneakystrike", "suckerpunch", "acrobatics", "backflip", "blur", 
+    "bouncingflask", "calculatedgamble", "caltrops", "catalyst", "choke", "dash", "distraction", 
+    "endlessagony", "eviscerate", "expertise", "flechettes", "footwork", "heelhook", "infiniteblades", 
+    "legsweep", "malaise", "masterfulstab", "noxiousfumes", "predator", "riddlewithholes", 
+    "skewer", "terror", "welllaidplans", "athousandcuts", "adrenaline", "afterimage", "alchemize", 
+    "bullettime", "burst", "diediedie", "doppelganger", "envenom", "glassknife", "grandfinale", 
+    "phantasmalkiller", "nightmare", "toolsofthetrade", "stormofsteel", "unload", "wraithform", 
+    "balllightning", "barrage", "beamcell", "chargebattery", "claw", "coldsnap", "compiledriver", 
+    "coolheaded", "gash", "gofortheeyes", "hologram", "leap", "rebound", "steambarrier", 
+    "sweepingbeam", "turbo", "aggregate", "autoshields", "blizzard", "bootsequence", "chill", 
+    "consume", "defragment", "doomandgloom", "doubleenergy", "electrodynamics", "ftl", 
+    "forcefield", "fusion", "geneticalgorithm", "heatsinks", "helloworld", "loop", "melter", 
+    "overclock", "recycle", "reinforcedbody", "reprogram", "riptide", "scrape", "skim", 
+    "staticdischarge", "storm", "sunder", "tempest", "whitenoise", "allforone", "amplify", 
+    "biasedcognition", "buffer", "coresurge", "creativeai", "echoform", "fission", "hyperbeam", 
+    "machinelearning", "meteorstrike", "multicast", "rainbow", "reboot", "seek", "thunderstrike", 
+    "bow", "crushjoints", "flurryofblows", "flyingsleeves", "followup", "justlucky", "sashwhip", 
+    "thirdeye", "cutthroughfate", "emptybody", "emptyfist", "evaluating", "proclaim", 
+    "pressurepoints", "protect", "crescendo", "tranquility", "alpha", "battlehymn", "carvereality", 
+    "collect", "conclude", "deceivereality", "devotion", "foreigninfluence", "indignation", 
+    "innerpeace", "likewater", "meditation", "mentalfortress", "nirvana", "perseverance", 
+    "pray", "reachheaven", "regretfulfists", "sanctity", "simmering_fury", "swivel", 
+    "talktothehand", "tantrum", "waveofthehand", "wavesofthehand", "weave", "windmillstrike", 
+    "worship", "wreathofflame", "blasphemy", "brilliance", "conjureblade", "deusexmachina", 
+    "devaform", "establishment", "fasting", "lessonlearned", "masterreality", "omniscience", 
+    "ragnarok", "scrawl", "spiritshield", "wish", "apparition", "bite", "blind", "darkshackles", 
+    "deepbreath", "discovery", "dramaticentrance", "enlightenment", "finesse", "flashofsteel", 
+    "forethought", "goodinstincts", "handofgreed", "impatience", "jackofalltrades", "madness", 
+    "mindblast", "panacea", "panache", "purity", "sadisticnature", "secrettechnique", 
+    "secretweapon", "swiftstrike", "thinkingahead", "transmutation", "violence", "chrysalis", 
+    "magnetism", "mayhem", "metamorphosis", "masterofstrategy", "thebomb", "clumsy", "decay", 
+    "doubt", "injury", "normality", "pain", "regret", "shame", "writhe", "parasite", 
+    "necronomicurse", "curseofthebell", "ascendersbane", "slimed", "void", "dazed", "wound", 
+    "burn", "jax", "seversoul", "warcry", "burningpact", "bloodforblood", "sentinel", 
+    "truegrit", "dropkick", "wheelkick", "infernalblade", "streamline", "steam", "stack", 
+    "conservebattery", "glacier", "capacitor", "selfrepair", "chaos", "darkness", "ripandtear", 
+    "steampower", "redo", "alloutattack", "concentrate", "bladedance", "cripplingpoison", 
+    "underhandedstrike", "backstab", "reflex", "escapeplan", "finisher", "lockon", "apotheosis", 
+    "undo", "accuracy", "cloakanddagger", "setup", "corpseexplosion", "venomology", "tactician", 
+    "singingbowl", "nightterror", "fearnoevil", "pathtovictory", "wireheading", "study", 
+    "bowlingbash", "signaturemove", "halt", "clearthemind", "wallop", "unknowncard"
 ]
 
 ALL_VANILLA_RELICS = [
-    "Burning Blood", "Ring of the Snake", "Cracked Core", "Pure Water", "Akabeko", "Anchor", 
-    "Ancient Tea Set", "Art of War", "Bag of Marbles", "Bag of Preparation", "Blood Vial", 
-    "Bronze Scales", "Centennial Puzzle", "Ceramic Fish", "Dream Catcher", "Happy Flower", 
-    "Juzu Bracelet", "Lantern", "Maw Bank", "Meal Ticket", "Nunchaku", "Oddly Smooth Stone", 
-    "Omamori", "Orichalcum", "Pen Nib", "Potion Belt", "Preserved Insect", "Regal Pillow", 
-    "Smiling Mask", "Strawberry", "Boot", "Toy Ornithopter", "Vajra", "War Paint", "Blue Candle", 
-    "Bottled Flame", "Bottled Lightning", "Bottled Tornado", "Darkstone Periapt", "Eternal Feather", 
-    "Frozen Egg", "Horn Cleat", "InkBottle", "Kunai", "Letter Opener", "Matryoshka", "Meat on the Bone", 
-    "Mercury Hourglass", "Molten Egg", "Mummified Hand", "Ornamental Fan", "Pantograph", 
-    "Pear", "Question Card", "Shovel", "Singing Bowl", "Strike Dummy", "Sundial", "Toxic Egg", 
-    "White Beast Statue", "Bird-Faced Urn", "Calipers", "Captain's Wheel", "Champion Belt", 
-    "Charon's Ashes", "Cloak Clasp", "Dead Branch", "Du-Vu Doll", "Fossilized Helix", "Gambling Chip", 
-    "Ginger", "Girya", "Golden Eye", "Ice Cream", "Incense Burner", "Lizard Tail", "Magic Flower", 
-    "Mango", "Old Coin", "Peace Pipe", "Pocketwatch", "Prayer Wheel", "Shuriken", "Stone Calendar", 
-    "The Courier", "Torii", "Tough Bandages", "Tingsha", "Turnip", "Unceasing Top", "Wing Boots", 
-    "Astrolabe", "Black Blood", "Black Star", "Busted Crown", "Calling Bell", "Coffee Dripper", 
-    "Cursed Key", "Ectoplasm", "Empty Cage", "Fusion Hammer", "Hovering Kite", "Inversion Dynamo", 
-    "Mark of Pain", "Nuclear Battery", "Pandora's Box", "Philosopher's Stone", "Runic Dome", 
-    "Runic Pyramid", "Sacred Bark", "SlaversCollar", "Slaver's Collar", "Snecko Eye", "Sozu", 
-    "Velvet Choker", "Wrist Blade", "Cauldron", "Chemical X", "Dolly's Mirror", "Frozen Eye", 
-    "Lee's Waffle", "Medical Kit", "Membership Card", "Orange Pellets", "Orrery", "Prismatic Shard", 
-    "Sling of Courage", "Strange Spoon", "Sling", "The Specimen", "Tough Bandages", "Nilo's Codex", 
-    "Enchiridion", "Necronomicon", "Mutagenic Strength", "Golden Idol", "Bloody Idol", "Red Mask", 
-    "Spirit Poop", "Cultist Headpiece", "Face of Cleric", "Ssserpent Head", "Gremlin Mask", "Nloth's Gift", 
-    "Nloth's Hungry Face", "Warped Tongs", "Odd Mushroom", "Red Mask", "Neow's Lament", "Circlet", "UNKNOWN_RELIC"
+    "burningblood", "ringofthesnake", "crackedcore", "purewater", "akabeko", "anchor", 
+    "ancientteaset", "artofwar", "bagofmarbles", "bagofpreparation", "bloodvial", 
+    "bronzescales", "centennialpuzzle", "ceramicfish", "dreamcatcher", "happyflower", 
+    "juzubracelet", "lantern", "mawbank", "mealticket", "nunchaku", "oddlysmoothstone", 
+    "omamori", "orichalcum", "pennib", "potionbelt", "preservedinsect", "regalpillow", 
+    "smilingmask", "strawberry", "boot", "toyornithopter", "vajra", "warpaint", "bluecandle", 
+    "bottledflame", "bottledlightning", "bottledtornado", "darkstoneperiapt", "eternalfeather", 
+    "frozenegg", "horncleat", "inkbottle", "kunai", "letteropener", "matryoshka", "meatonthebone", 
+    "mercuryhourglass", "moltenegg", "mummifiedhand", "ornamentalfan", "pantograph", 
+    "pear", "questioncard", "shovel", "singingbowl", "strikedummy", "sundial", "toxicegg", 
+    "whitebeaststatue", "birdfacedurn", "calipers", "captainswheel", "championbelt", 
+    "charonsashes", "cloakclasp", "deadbranch", "duvudoll", "fossilizedhelix", "gamblingchip", 
+    "ginger", "girya", "goldeneye", "icecream", "incenseburner", "lizardtail", "magicflower", 
+    "mango", "oldcoin", "peacepipe", "pocketwatch", "prayerwheel", "shuriken", "stonecalendar", 
+    "thecourier", "torii", "toughbandages", "tingsha", "turnip", "unceasingtop", "wingboots", 
+    "astrolabe", "blackblood", "blackstar", "bustedcrown", "callingbell", "coffeedripper", 
+    "cursedkey", "ectoplasm", "emptycage", "fusionhammer", "hoveringkite", "inversiondynamo", 
+    "markofpain", "nuclearbattery", "pandorasbox", "philosophersstone", "runicdome", 
+    "runicpyramid", "sacredbark", "slaverscollar", "sneckoeye", "sozu", "velvetchoker", 
+    "wristblade", "cauldron", "chemicalx", "dollysmirror", "frozeneye", "leeswaffle", 
+    "medicalkit", "membershipcard", "orangepellets", "orrery", "prismaticshard", 
+    "slingofcourage", "strangespoon", "sling", "thespecimen", "niloscodex", "enchiridion", 
+    "necronomicon", "mutagenicstrength", "goldenidol", "bloodyidol", "redmask", "spiritpoop", 
+    "cultistheadpiece", "faceofcleric", "ssserpenthead", "gremlinmask", "nlothsgift", 
+    "nlothshungryface", "warpedtongs", "oddmushroom", "neowslament", "circlet", "damaru", 
+    "datadisk", "redskull", "sneckoskull", "goldplatedcables", "paperkrane", "paperphrog", 
+    "teardroplocket", "emotionchip", "threadandneedle", "tungstenrod", "frozencore", 
+    "holywater", "ringoftheserpent", "runiccapacitor", "runiccube", "tinyhouse", "handdrill", 
+    "clockworksouvenir", "markofthebloom", "jax", "unknownrelic"
 ]
 
 # Generate fast index lookups mapping string keys to fixed dense column vectors
@@ -111,6 +129,16 @@ RELIC_INDICES = {name: idx for idx, name in enumerate(ALL_VANILLA_RELICS)}
 
 NUM_RELICS = len(ALL_VANILLA_RELICS)
 NUM_CARDS = len(ALL_VANILLA_CARDS)
+
+def normalize_game_string(input_str: str) -> str:
+    """Standardizes game names by removing upgrades, casing, spaces, and dashes."""
+    if not input_str:
+        return ""
+    # Strip card upgrade suffix if present (safe to run on relics too)
+    base_name = input_str.split("+")[0]
+    # Lowercase, remove spaces, underscores, and dashes
+    return base_name.lower().replace(" ", "").replace("_", "").replace("-", "").strip()
+
 
 def find_working_7zip_command():
     for cmd in ["7z", "7zz", "7zip"]:
@@ -134,7 +162,9 @@ def get_archive_file_list(archive_path):
             filenames.append(line.split("Path = ", 1)[1].strip())
     return filenames
 
-def execute_scalable_pipeline():
+def run_transformer_pipeline():
+    if os.path.exists(TEMP_RAW_ROWS):
+        os.remove(TEMP_RAW_ROWS)
     all_files = get_archive_file_list(SEVENZ_ARCHIVE_PATH)
     raw_sample_size = min(int(TARGET_RUNS_LIMIT * QUALIFICATION_SAFETY_MULTIPLIER), len(all_files))
     
@@ -142,53 +172,91 @@ def execute_scalable_pipeline():
     sample_targets = all_files[:raw_sample_size] 
     
     processed_count = 0
-    group_id = 0
+    group_id = 0  # Default fallback for clean/new files
         
-    print(f"Starting memory-safe streaming pipeline. Target: {TARGET_RUNS_LIMIT} archive units.")
+    # --- DYNAMICALLY RESOLVE STARTING GROUP_ID ---
+    if os.path.exists(TRANSFORMER_OUTPUT_CSV) and os.path.getsize(TRANSFORMER_OUTPUT_CSV) > 0:
+        try:
+            with open(TRANSFORMER_OUTPUT_CSV, "rb") as f:
+                # Seek to the end of the file to scan backward efficiently
+                f.seek(0, os.SEEK_END)
+                end_pos = f.tell()
+                buffer_size = 1024
+                
+                # Slide backward through the byte buffer to locate the true final newline
+                if end_pos > buffer_size:
+                    f.seek(end_pos - buffer_size)
+                    bytes_data = f.read(buffer_size)
+                else:
+                    f.seek(0)
+                    bytes_data = f.read()
+                    
+                lines = bytes_data.split(b"\n")
+                # Drop trailing empty line splits if they exist
+                last_line = lines[-1] if lines[-1] else lines[-2]
+                
+                # Split the raw CSV string columns to grab the very first token (group_id)
+                last_group_id_str = last_line.split(b",")[0].decode('utf-8')
+                
+                # Ensure the parsed item isn't the string header text block "group_id"
+                if last_group_id_str.isdigit():
+                    group_id = int(last_group_id_str) + 1
+                    print(f"Resuming pipeline cleanly. Last found group_id was {group_id - 1}. Set next start index to: {group_id}")
+                else:
+                    print("Found file header but no rows. Starting group_id at: 0")
+        except Exception as e:
+            print(f"Warning: Failed reading tail metadata context ({e}). Defaulting group_id to: 0")
+    else:
+        print("No prior dataset detected or file is empty. Initializing brand new group_id sequence at: 0")
+
+        
+    print(f"Starting Transformer Sequence Pipeline. Target: {TARGET_RUNS_LIMIT} archive units.")
     
-    # Open intermediate scratch file to stream data incrementally to disk
+    # -------------------------------------------------------------------------
+    # PASS 1: EXTRACT RUN CHRONOLOGY AND LOG SEMANTIC DENSE STRINGS
+    # -------------------------------------------------------------------------
     with open(TEMP_RAW_ROWS, mode="w", newline="", encoding="utf-8") as temp_file:
         writer = csv.writer(temp_file)
         
-        # Process target files one by one using 7z stdout streaming to prevent RAM bloat
         for file_path in sample_targets:
             if processed_count >= TARGET_RUNS_LIMIT:
                 break
                 
             try:
+                # 1. Decompress a single file out to stdout (processed directly in RAM)
                 cmd = [SEVEN_ZIP_CMD, "e", SEVENZ_ARCHIVE_PATH, file_path, "-so", "-y"]
                 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
                 if proc.returncode != 0 or not proc.stdout:
                     continue
-
-                # Parse raw bytes into JSON memory array
+                    
                 file_items = orjson.loads(proc.stdout)
-                del proc
+                del proc  # Free process memory immediately
                 
                 if not isinstance(file_items, list):
                     file_items = [file_items]
-                
-                # Loop through individual nested run events inside the array wrapper
+                    
                 for item in file_items:
                     if processed_count >= TARGET_RUNS_LIMIT:
                         break
 
+                    # Isolate the run event payload
                     data = item.get("event") if isinstance(item, dict) and "event" in item else item
-                    
                     if not isinstance(data, dict):
                         continue
-
-                    # FILTER RUNS IN RAM: Checks requirements BEFORE committing writing spikes onto storage disk
-
+                        
+                    # Filter: Minimum floor reached
                     if data.get("floor_reached", 1) < MIN_FLOOR_THRESHOLD:
                         continue
                         
-                    # Capture global Ascension Level feature
+                    # Filter: Ascension level threshold
                     ascension = int(data.get("ascension_level", 0))
                     if ascension < MIN_ASCENSION_LEVEL:
                         continue
                         
-                    char_str = data.get("character_chosen")
+                    # Filter: Valid character check
+                    raw_char_str = data.get("character_chosen", "")
+                    char_str = normalize_game_string(raw_char_str)
+                    
                     if char_str not in CHARACTER_MAP:
                         continue
                         
@@ -199,90 +267,99 @@ def execute_scalable_pipeline():
 
                     processed_count += 1
                     
-                    # Capture historical floor timelines for tracking dynamic variables
+                    # Timelines metrics
                     gold_timeline = data.get("gold_per_floor", [])
                     hp_timeline = data.get("hp_per_floor", [])
                     max_hp_timeline = data.get("max_hp_per_floor", [])
                         
                     current_relics = set()
-                    relics_by_floor = {int(r["floor"]): r["key"] for r in data.get("relics_obtained", []) if "floor" in r and r.get("floor") is not None}
+                    relics_by_floor = {
+                        int(r["floor"]): normalize_game_string(r.get("key", "")) 
+                        for r in data.get("relics_obtained", []) 
+                        if "floor" in r and r.get("floor") is not None
+                    }
                     
-                    # Ensure starting deck items are baseline cleaned from the start
-                    running_deck = [card.split("+")[0] for card in STARTING_DECKS.get(char_id, []).copy()]
+                    # --- Optimization: O(1) Deck Tracking Setup ---
+                    # Instead of a flat list, we maintain a live-updating counter map
+                    deck_snapshot = {}
+                    for card in STARTING_DECKS.get(char_id, []):
+                        deck_snapshot[card] = deck_snapshot.get(card, 0) + 1
+                    
                     card_choices.sort(key=lambda x: x.get("floor", 0))
                     current_floor = 1
                     
+                    # --- Optimization: RAM CSV Buffer ---
+                    # Accumulate rows in memory per file, writing in one single bulk operation
+                    file_rows = []
+                    
                     for choice in card_choices:
                         floor = int(choice.get("floor", 0))
+                        
+                        # Catch up on any relics acquired between choices
                         for f_idx in range(current_floor, floor + 1):
                             if f_idx in relics_by_floor:
-                                r_name = relics_by_floor[f_idx]
-                                current_relics.add(r_name)
+                                current_relics.add(relics_by_floor[f_idx])
                         current_floor = floor
                         
-                        # --- TIME-TRAVEL CALCULATOR FOR RUN STATE ---
-                        # Run arrays are 0-indexed, meaning Floor 1 status is at index 0
+                        # Process metrics indexes securely
                         timeline_idx = floor - 1
-                        
-                        # Safe fallbacks protect against corrupted timeline arrays
                         gold_val = gold_timeline[timeline_idx] if timeline_idx < len(gold_timeline) else 99
                         curr_hp = hp_timeline[timeline_idx] if timeline_idx < len(hp_timeline) else 70
                         max_hp = max_hp_timeline[timeline_idx] if timeline_idx < len(max_hp_timeline) else 70
-                        
-                        # Calculate a normalized health ratio feature (Value between 0.0 and 1.0)
                         hp_ratio = round(float(curr_hp) / float(max_hp), 3) if max_hp > 0 else 1.0
                         
-                        # Clean card upgrades immediately using split("+")
-                        raw_picked = choice.get("picked", "SKIP")
-                        picked = raw_picked.split("+")[0] if raw_picked != "SKIP" else "SKIP"
-                        not_picked = [card.split("+")[0] for card in choice.get("not_picked", [])]
+                        # Sanitize card identifiers (strip upgrade level '+1')
+                        raw_picked = choice.get("picked", "skip")
+                        picked = normalize_game_string(raw_picked) if raw_picked != "skip" else "skip"
+                        not_picked = [normalize_game_string(card) for card in choice.get("not_picked", [])]
                         
-                        deck_snapshot = {}
-                        for card in running_deck:
-                            deck_snapshot[card] = deck_snapshot.get(card, 0) + 1
-                            
+                        # --- Optimization: JSON-serialize exactly once per floor ---
                         relics_str = orjson.dumps(list(current_relics)).decode('utf-8')
                         deck_str = orjson.dumps(deck_snapshot).decode('utf-8')
                         
-                        # --- CLEAN INTERLOCKING CONTRASTIVE PICK LOGIC ---
-                        if picked != "SKIP":
-                            # Player picked a card
-                            writer.writerow([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, picked, 0, 1])
+                        # Construct flattened ML rows for modeling
+                        if picked != "skip":
+                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, picked, 0, 1])
                             for npc in not_picked:
-                                writer.writerow([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
-                            writer.writerow([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "SKIP", 1, 0])
+                                file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
+                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "skip", 1, 0])
                             
-                            running_deck.append(picked)
+                            # --- Optimization: Fast O(1) deck update ---
+                            deck_snapshot[picked] = deck_snapshot.get(picked, 0) + 1
                         else:
-                            # Player picked SKIP
                             for npc in not_picked:
-                                writer.writerow([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
-                            writer.writerow([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "SKIP", 1, 1])
+                                file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, npc, 0, 0])
+                            file_rows.append([group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_str, deck_str, "skip", 1, 1])
                             
-                        # Increment group_id per choice event reward screen
                         group_id += 1
                     
-                if processed_count % 10 == 0:
-                    print(f" -> Logged {processed_count} JSON file entries to disk storage...")
+                    # --- Optimization: Single SSD Write Operation per Run File ---
+                    if file_rows:
+                        writer.writerows(file_rows)
                     
-            except Exception:
+                if processed_count % 10 == 0:
+                    print(f" -> Logged {processed_count} JSON entries...")
+                    
+            except Exception as e:
+                # Silently catch malformed file errors to keep parser moving
                 continue
-                
-    # =========================================================================
-    # PASS 2: STREAM COMPUTE FLAT MATRIX ROWS
-    # =========================================================================
-    print(f"\nVectorizing intermediate file into final dataset layout...")
+
+    # -------------------------------------------------------------------------
+    # PASS 2: CONVERT TO TRANSfORMER SEQUENCE TOKENS AND WRITE FINAL DATASET
+    # -------------------------------------------------------------------------
+    print(f"\nVectorizing intermediate file into Transformer sequence tokens...")
     
-    # Structural modification tracking injected variables at specific indexed slots
-    headers = ["group_id", "floor", "character_class", "ascension_level", "gold", "hp_ratio"]
-    headers += [f"relic_{idx}" for idx in range(NUM_RELICS)]
-    headers += [f"deck_{idx}" for idx in range(NUM_CARDS)]
-    headers += ["candidate_card_id", "is_virtual_skip", "target"]
+    headers = ["group_id", "floor", "character_class", "ascension_level", "gold", "hp_ratio", "relic_seq", "deck_seq", "candidate_card_id", "is_virtual_skip", "target"]
     
-    with open(TEMP_RAW_ROWS, "r", encoding="utf-8") as temp_in, open(OUTPUT_CSV, "w", newline="", encoding="utf-8") as csv_out:
+    # Check if the output file already exists and has data inside it
+    file_exists_and_not_empty = os.path.exists(TRANSFORMER_OUTPUT_CSV) and os.path.getsize(TRANSFORMER_OUTPUT_CSV) > 0
+
+    with open(TEMP_RAW_ROWS, "r", encoding="utf-8") as temp_in, open(TRANSFORMER_OUTPUT_CSV, "a", newline="", encoding="utf-8") as csv_out:
         reader = csv.reader(temp_in)
         writer = csv.writer(csv_out)
-        writer.writerow(headers)
+        # Only write headers if the file is empty/new
+        if not file_exists_and_not_empty:
+            writer.writerow(headers)
         
         for row in reader:
             group_id, floor, char_id, ascension, gold_val, hp_ratio, relics_json, deck_json, candidate, is_virtual, target = row
@@ -290,32 +367,43 @@ def execute_scalable_pipeline():
             current_relics = orjson.loads(relics_json)
             deck_snapshot = orjson.loads(deck_json)
             
-            relic_vector = [0] * NUM_RELICS
-            unknown_relic_idx = RELIC_INDICES["UNKNOWN_RELIC"]
-            for r in current_relics:
-                if r in RELIC_INDICES:
-                    relic_vector[RELIC_INDICES[r]] = 1
-                else:
-                     relic_vector[unknown_relic_idx] = 1
-                    
-            deck_vector = [0] * NUM_CARDS
+            # --- TOKENIZE RELICS WITH ID SHIFT (0 = Padding Token) ---
+            # If item is found, assign token = index + 1. Otherwise skip.
+            unknown_relic_idx = RELIC_INDICES["unknownrelic"]
+            relic_seq = [(RELIC_INDICES[r] + 1) if r in RELIC_INDICES else (unknown_relic_idx + 1) for r in current_relics][:MAX_RELIC_LEN]
+            # Pad array with zeros to match static matrix size requirement
+            relic_seq += [0] * (MAX_RELIC_LEN - len(relic_seq))
+            
+            # --- UNPACK BAG-OF-WORDS DICT BACK INTO A SEQUENTIAL LIST ---
+            raw_deck_list = []
             for card, count in deck_snapshot.items():
                 if card in CARD_INDICES:
-                    deck_vector[CARD_INDICES[card]] = count
-                    
-            unknown_idx = CARD_INDICES["UNKNOWN_CARD"]
-            candidate_id = CARD_INDICES.get(candidate, unknown_idx)
+                    card_token = CARD_INDICES[card] + 1  # ID Shift for padding
+                    raw_deck_list.extend([card_token] * count)
             
-            # Combine everything cleanly into the wide format vector row
-            flat_row = [group_id, floor, char_id, int(ascension), int(gold_val), float(hp_ratio)] + relic_vector + deck_vector + [candidate_id, int(is_virtual), int(target)]
+            deck_seq = raw_deck_list[:MAX_DECK_LEN]
+            deck_seq += [0] * (MAX_DECK_LEN - len(deck_seq))
+            
+            # --- TOKENIZE CANDIDATE ITEM ---
+            unknown_idx = CARD_INDICES["unknowncard"]
+            if candidate not in CARD_INDICES:
+                print(f"DEBUG: Unmapped/Non-Vanilla Card encountered: '{candidate}'")
+            candidate_id = CARD_INDICES.get(candidate, unknown_idx) + 1  # Shifts fallback default to 0
+            
+            # Stringify lists to protect the interior comma tokens during CSV writing
+            relic_seq_str = orjson.dumps(relic_seq).decode('utf-8')
+            deck_seq_str = orjson.dumps(deck_seq).decode('utf-8')
+            
+            flat_row = [
+                group_id, floor, char_id, int(ascension), int(gold_val), float(hp_ratio),
+                relic_seq_str, deck_seq_str, candidate_id, int(is_virtual), int(target)
+            ]
             writer.writerow(flat_row)
             
     if os.path.exists(TEMP_RAW_ROWS):
         os.remove(TEMP_RAW_ROWS)
         
-    print(f"Pipeline finished safely! Final dataset stored at: {OUTPUT_CSV}")
-
-
+    print(f"Pipeline finished safely! Transformer dataset stored at: {TRANSFORMER_OUTPUT_CSV}")
 
 if __name__ == "__main__":
-    execute_scalable_pipeline()
+    run_transformer_pipeline()

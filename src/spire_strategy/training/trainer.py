@@ -1,84 +1,120 @@
-import json
-import os
-import pandas as pd
-import numpy as np
-import lightgbm as lgb
-from sklearn.model_selection import GroupShuffleSplit
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, random_split
+from spire_strategy.models import SpireSequenceDataset, SpireRecommendationTransformer
+import spire_strategy.data.pipeline as pipeline
 
-MODEL_FILE = "spire_ranker.txt"
+def train_recommender():
+    # Configure variables matching indexing maps
+    CARD_VOCAB_SIZE = len(pipeline.ALL_VANILLA_CARDS)  # Size of ALL_VANILLA_CARDS array
+    RELIC_VOCAB_SIZE = len(pipeline.ALL_VANILLA_RELICS) # Size of ALL_VANILLA_RELICS array
+    BATCH_SIZE = 512
+    EPOCHS = 50
+    
+    # Check for hardware acceleration
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using compute acceleration target device: {device}")
+    
+    # Load the full big dataset
+    full_dataset = SpireSequenceDataset("slay_the_spire_transformer.csv")
 
-def train_model():
-    """Trains the LightGBM Ranker utilizing Group-Based Validation Splits and Early Stopping."""
-    if not os.path.exists("dataset.csv"):
-        print("Error: dataset.csv missing. Please run parse_runs.py first.")
-        return None
+    # Calculate split dimensions (e.g., 85% Train, 15% Validation)
+    train_size = int(0.85 * len(full_dataset))
+    val_size = len(full_dataset) - train_size
 
-    print("Loading compiled spreadsheet dataset...")
-    df = pd.read_csv("dataset.csv")
-    
-    # Force sort to keep group chunks uniform
-    df = df.sort_values("group_id").reset_index(drop=True)
-    
-    # 1. GROUP-AWARE VALIDATION SPLIT
-    # Standard random splits break ranking groups. We must keep all 4 rows of an event together.
-    gss = GroupShuffleSplit(n_splits=1, test_size=0.20, random_state=42)
-    train_idx, val_idx = next(gss.split(df, groups=df["group_id"]))
-    
-    train_df = df.iloc[train_idx].copy()
-    val_df = df.iloc[val_idx].copy()
-    
-    # Calculate group sizing arrays for both sectors
-    train_groups = train_df.groupby("group_id").size().to_numpy()
-    val_groups = val_df.groupby("group_id").size().to_numpy()
-    
-    # Isolate targets and features
-    y_train = train_df["target"].to_numpy()
-    X_train = train_df.drop(columns=["group_id", "target"])
-    
-    y_val = val_df["target"].to_numpy()
-    X_val = val_df.drop(columns=["group_id", "target"])
-    
-    print(f"Data split finalized: {len(train_groups)} training scenarios | {len(val_groups)} validation scenarios.")
-    
-    # 2. CONSTRUCT MODEL WITH EXTENDED TREE CAP
-    ranker = lgb.LGBMRanker(
-        objective="lambdarank",
-        metric="ndcg",
-        n_estimators=1000,       # Set high; early stopping will halt training when optimal
-        learning_rate=0.03,      # Lower learning rate yields superior tree patterns
-        max_depth=6,
-        verbose=-1
-    )
-    
-    # 3. FIT WITH EARLY STOPPING CALLBACKS
-    print("Training ranking engine with live validation tracking...")
-    ranker.fit(
-        X_train, 
-        y_train, 
-        group=train_groups, 
-        eval_set=[(X_val, y_val)],
-        eval_group=[val_groups],
-        categorical_feature=["character_class"],
-        callbacks=[
-            # Stops if validation NDCG score fails to improve for 20 straight trees
-            lgb.early_stopping(stopping_rounds=20, verbose=True), 
-            lgb.log_evaluation(period=10)
-        ]
-    )
-    
-    # Print diagnostic validation capabilities
-    best_iter = ranker.booster_.best_iteration
-    print(f"Model training converged successfully at iteration: {best_iter}")
-    
-    ranker.booster_.save_model(MODEL_FILE)
-    print(f"--> Exported optimal model weights successfully to '{MODEL_FILE}'!")
-    return ranker
+    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
-def load_existing_model():
-    """Loads a pre-trained LightGBM Booster model if it exists on disk."""
-    if os.path.exists(MODEL_FILE):
-        print(f"Found existing model weights at '{MODEL_FILE}'. Loading...")
-        bst = lgb.Booster(model_file=MODEL_FILE)
-        print("Model loaded successfully! Skipping training phase.")
-        return bst
-    return None
+    # Build two separate data loaders
+    train_loader = DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=2, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=512, shuffle=False, num_workers=2, pin_memory=True)
+    
+    # Initialize Network Modules
+    model = SpireRecommendationTransformer(
+        card_vocab_size=CARD_VOCAB_SIZE, 
+        relic_vocab_size=RELIC_VOCAB_SIZE
+    ).to(device)
+    
+    criterion = nn.BCEWithLogitsLoss() # Perfect for evaluating contrastive selection rows
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-4, weight_decay=1e-2)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    
+    for epoch in range(EPOCHS):
+        model.train()
+        total_loss = 0.0
+        
+        for batch_idx, batch in enumerate(train_loader):
+            # Send sub-arrays to active device safely
+            for key in batch:
+                batch[key] = batch[key].to(device)
+                
+            optimizer.zero_grad()
+            
+            # Predict logits
+            predictions = model(batch)
+            loss = criterion(predictions, batch['target'])
+            
+            # Backward pass optimization step
+            loss.backward()
+            optimizer.step()
+            
+            total_loss += loss.item()
+            
+            if batch_idx % 200 == 0:
+                print(f"Epoch [{epoch+1}/{EPOCHS}] | Batch {batch_idx}/{len(train_loader)} | Current Loss: {loss.item():.4f}")
+                
+        scheduler.step()
+        avg_loss = total_loss / len(train_loader)
+        print(f"=== Epoch [{epoch+1}/{EPOCHS}] Completed. Normalized Average Loss: {avg_loss:.4f} ===")
+
+        # =========================================================================
+        # VALIDATION PHASE: COMPUTE TRUE TOP-1 CHOICE SELECTION ACCURACY
+        # =========================================================================
+        model.eval()
+        
+        # Dictionaries to track the highest-scoring option per unique screen group
+        group_max_score = {}
+        group_winning_target = {}
+        
+        with torch.no_grad():
+            for val_batch in val_loader:
+                # Send sub-arrays to compute acceleration device safely
+                for key in val_batch:
+                    if torch.is_tensor(val_batch[key]):
+                        val_batch[key] = val_batch[key].to(device)
+                
+                # Predict raw logit preference values
+                val_logits = model(val_batch)
+                
+                # Unpack tensors to CPU to safely build lookup maps
+                g_ids = val_batch['group_id'].cpu().numpy() if 'group_id' in val_batch else val_batch['character'].cpu().numpy() # Fallback if no explicit string ID passed
+                scores = val_logits.cpu().numpy()
+                targets = val_batch['target'].cpu().numpy()
+                
+                # Evaluate rows continuously across mini-batch segments
+                for idx in range(len(scores)):
+                    g_id = g_ids[idx]
+                    score = scores[idx]
+                    is_pick = targets[idx]
+                    
+                    # Track the single highest output prediction score the model generated for this screen
+                    if g_id not in group_max_score or score > group_max_score[g_id]:
+                        group_max_score[g_id] = score
+                        # Record if the model's preferred option was the actual chosen card
+                        group_winning_target[g_id] = is_pick
+                        
+        # Calculate how often the model's top choice aligned with the human player's choice
+        total_screens = len(group_winning_target)
+        correct_selections = sum(1 for g in group_winning_target if group_winning_target[g] == 1)
+        
+        if total_screens > 0:
+            top1_accuracy = (correct_selections / total_screens) * 100
+            print(f"-> Validation Evaluation | Total Screens Checked: {total_screens} | Top-1 Recommender Accuracy: {top1_accuracy:.2f}%")
+        else:
+            print("-> Validation Evaluation | Warning: No complete decision groups detected in validation subset.")
+        
+    # Save the trained parameters
+    torch.save(model.state_dict(), "spire_transformer_recommender.pt")
+    print("Model parameters weights written successfully to disk!")
+
+if __name__ == "__main__":
+    train_recommender()
