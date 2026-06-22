@@ -1,0 +1,11 @@
+# --- Core High-Performance Data Streaming Engine ---
+orjson>=3.11.9             # Fast byte-parsing serialization for JSON data
+pandas>=3.0.3             # Tabular data grouping and chunked file handling
+numpy>=2.4.4             # Vectorized matrix operations and array math
+
+# --- Machine Learning Optimization Backends ---
+lightgbm>=4.6.0           # GBDT tree ranking and multiclass ensemble frameworks
+scikit-learn>=1.9.0       # Group-aware cross-validation splitting algorithms
+
+# --- Deep Learning Sequence Framework (Frozen in History Phase) ---
+torch>=2.12.0              # PyTorch framework for your sequential Transformer step
