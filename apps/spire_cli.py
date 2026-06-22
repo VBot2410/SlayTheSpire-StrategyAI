@@ -21,7 +21,8 @@ def normalize_game_string(input_str: str) -> str:
 class SpireCLISession:
     def __init__(self):
         print("\n=== Initializing Slay the Spire AI Assistant ===")
-        self.recommender = LiveSpireRecommender()
+        # Optional: Pass model_dir if your 3-act models are in a subfolder, otherwise "." works if files are in cwd
+        self.recommender = LiveSpireRecommender(model_dir=".")
         
         # Build clean, normalized reverse lookup maps using your exact cleaning function
         self.card_to_id = {normalize_game_string(name): idx for idx, name in enumerate(config.ALL_VANILLA_CARDS)}
