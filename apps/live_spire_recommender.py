@@ -2,10 +2,13 @@ import lightgbm as lgb
 import numpy as np
 import os
 # IMPORT YOUR DEFINITIVE VOCABULARY ARRAYS SO SHAPES NEVER MISMATCH
-import spire_strategy.data.pipeline as config
+from spire_strategy.data import ALL_VANILLA_CARDS, ALL_VANILLA_RELICS
+from spire_strategy import PACKAGE_ROOT
+
+MODELS_DIR = PACKAGE_ROOT / "models/"
 
 class LiveSpireRecommender:
-    def __init__(self, model_dir="."):
+    def __init__(self, model_dir=MODELS_DIR):
         """
         Loads and initializes all three Act-Specific Multiclass LightGBM models.
         """
@@ -16,8 +19,8 @@ class LiveSpireRecommender:
         }
         
         # Dynamic Vocabulary Alignment matching your training dataset footprint
-        self.card_vocab_size = len(config.ALL_VANILLA_CARDS)
-        self.relic_vocab_size = len(config.ALL_VANILLA_RELICS)
+        self.card_vocab_size = len(ALL_VANILLA_CARDS)
+        self.relic_vocab_size = len(ALL_VANILLA_RELICS)
         
         print(f"[AI] Multiclass Engine Init. Cards: {self.card_vocab_size} | Relics: {self.relic_vocab_size}")
 
@@ -107,11 +110,11 @@ class LiveSpireRecommender:
         if chosen_option_id == 0 or best_slot == 3:
             return f"❌ AI ADVICE: SKIP ALL CARDS (Slot {best_slot} Softmax Confidence: {probabilities[best_slot]:.4f})", 0
         else:
-            chosen_name = config.ALL_VANILLA_CARDS[chosen_option_id]
+            chosen_name = ALL_VANILLA_CARDS[chosen_option_id]
             return f"✅ AI ADVICE: TAKE '{chosen_name.upper()}' (Slot {best_slot} | Probability: {probabilities[best_slot]:.4f})", chosen_option_id
 
 if __name__ == "__main__":
-    recommender = LiveSpireRecommender(model_dir=".")
+    recommender = LiveSpireRecommender(model_dir=MODELS_DIR)
 
     # Create a typical Act 2 Defect environment state scenario
     mock_metrics = {

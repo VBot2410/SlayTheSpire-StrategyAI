@@ -1,7 +1,7 @@
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import spire_strategy.data.pipeline as config
+from spire_strategy.data import ALL_VANILLA_CARDS, ALL_VANILLA_RELICS
 
 def generate_feature_names(card_vocab_size, relic_vocab_size):
     """Reconstructs exact string labels matching your training horizontal stack order."""
@@ -16,17 +16,17 @@ def generate_feature_names(card_vocab_size, relic_vocab_size):
         if i == 0:
             feature_names.append("candidate_is_SKIP_index_0")
         else:
-            card_name = config.ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(config.ALL_VANILLA_CARDS) else f"unknown_card_{i}"
+            card_name = ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(ALL_VANILLA_CARDS) else f"unknown_card_{i}"
             feature_names.append(f"candidate_is_{card_name.upper()}")
 
     # 4. Relic Multi-Hot Vector (relic_vocab_size + 1 features)
     for i in range(relic_vocab_size + 1):
-        relic_name = config.ALL_VANILLA_RELICS[i - 1] if (i - 1) < len(config.ALL_VANILLA_RELICS) else f"unknown_relic_{i}"
+        relic_name = ALL_VANILLA_RELICS[i - 1] if (i - 1) < len(ALL_VANILLA_RELICS) else f"unknown_relic_{i}"
         feature_names.append(f"owned_relic_{relic_name.upper()}")
 
     # 5. Deck Frequency Vector (card_vocab_size + 1 features)
     for i in range(card_vocab_size + 1):
-        card_name = config.ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(config.ALL_VANILLA_CARDS) else f"unknown_card_{i}"
+        card_name = ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(ALL_VANILLA_CARDS) else f"unknown_card_{i}"
         feature_names.append(f"deck_count_of_{card_name.upper()}")
 
     # 6. Candidate * Total Relics Interaction Array (card_vocab_size + 1 features)
@@ -34,7 +34,7 @@ def generate_feature_names(card_vocab_size, relic_vocab_size):
         if i == 0:
             feature_names.append("interaction_SKIP_x_total_relics")
         else:
-            card_name = config.ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(config.ALL_VANILLA_CARDS) else f"unknown_card_{i}"
+            card_name = ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(ALL_VANILLA_CARDS) else f"unknown_card_{i}"
             feature_names.append(f"interaction_{card_name.upper()}_x_total_relics")
 
     # 7. Candidate * Total Deck Size Interaction Array (card_vocab_size + 1 features)
@@ -42,14 +42,14 @@ def generate_feature_names(card_vocab_size, relic_vocab_size):
         if i == 0:
             feature_names.append("interaction_SKIP_x_deck_size")
         else:
-            card_name = config.ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(config.ALL_VANILLA_CARDS) else f"unknown_card_{i}"
+            card_name = ALL_VANILLA_CARDS[i - 1] if (i - 1) < len(ALL_VANILLA_CARDS) else f"unknown_card_{i}"
             feature_names.append(f"interaction_{card_name.upper()}_x_deck_size")
 
     return feature_names
 
 def profile_act_models(model_dir="."):
-    card_vocab_size = len(config.ALL_VANILLA_CARDS)
-    relic_vocab_size = len(config.ALL_VANILLA_RELICS)
+    card_vocab_size = len(ALL_VANILLA_CARDS)
+    relic_vocab_size = len(ALL_VANILLA_RELICS)
     
     # Generate the comprehensive map keys
     feature_names = generate_feature_names(card_vocab_size, relic_vocab_size)

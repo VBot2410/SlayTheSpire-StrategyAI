@@ -1,1 +1,1 @@
-from spire_strategy.data.pipeline import execute_scalable_pipeline, ALL_VANILLA_CARDS, ALL_VANILLA_RELICS
+from spire_strategy.data.pipeline import ALL_VANILLA_CARDS, ALL_VANILLA_RELICS

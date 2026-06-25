@@ -26,3 +26,6 @@ Thumbs.db
 
 # Package build artifacts and metadata
 *.egg-info/
+
+# Ignore trained LightGBM models inside the package
+*.txt

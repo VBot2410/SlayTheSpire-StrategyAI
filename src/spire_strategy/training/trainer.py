@@ -3,7 +3,11 @@ import numpy as np
 import orjson
 import lightgbm as lgb
 import os
-import spire_strategy.data.pipeline as config
+from spire_strategy.data import ALL_VANILLA_CARDS, ALL_VANILLA_RELICS
+from spire_strategy import PACKAGE_ROOT
+
+MODELS_DIR = PACKAGE_ROOT / "models"
+MODELS_DIR.mkdir(exist_ok=True)
 
 def load_and_process_act_data(csv_path, card_vocab_size, relic_vocab_size, floor_min, floor_max):
     """Loads and processes data for a specific floor range into a single-row multiclass structure."""
@@ -248,8 +252,9 @@ def train_act_model(act_name, csv_path, card_vocab_size, relic_vocab_size, floor
 
     
     model_filename = f"spire_lgb_{act_name.lower().replace(' ', '_')}.txt"
-    model.save_model(model_filename)
-    print(f"Saved {model_filename}")
+    model_path = MODELS_DIR / model_filename
+    model.save_model(model_path)
+    print(f"Saved {model_filename} to package path: {MODELS_DIR}")
     
     return top1_accuracy, len(y_val)
 
@@ -271,6 +276,6 @@ def train_split_pipeline(csv_path, card_vocab_size, relic_vocab_size):
         print(f"=======================================================")
 
 if __name__ == "__main__":
-    CARD_SIZE = len(config.ALL_VANILLA_CARDS) 
-    RELIC_SIZE = len(config.ALL_VANILLA_RELICS)
+    CARD_SIZE = len(ALL_VANILLA_CARDS) 
+    RELIC_SIZE = len(ALL_VANILLA_RELICS)
     train_split_pipeline("slay_the_spire_transformer.csv", CARD_SIZE, RELIC_SIZE)

@@ -5,8 +5,8 @@ import numpy as np
 import lightgbm as lgb
 
 # Import existing recommender class and config
-import spire_strategy.data.pipeline as config
-from apps.live_spire_recommender import LiveSpireRecommender
+from spire_strategy.data import ALL_VANILLA_CARDS, ALL_VANILLA_RELICS
+from live_spire_recommender import LiveSpireRecommender
 
 def normalize_game_string(input_str: str) -> str:
     """
@@ -22,11 +22,11 @@ class SpireCLISession:
     def __init__(self):
         print("\n=== Initializing Slay the Spire AI Assistant ===")
         # Optional: Pass model_dir if your 3-act models are in a subfolder, otherwise "." works if files are in cwd
-        self.recommender = LiveSpireRecommender(model_dir=".")
+        self.recommender = LiveSpireRecommender()
         
         # Build clean, normalized reverse lookup maps using your exact cleaning function
-        self.card_to_id = {normalize_game_string(name): idx for idx, name in enumerate(config.ALL_VANILLA_CARDS)}
-        self.relic_to_id = {normalize_game_string(name): idx for idx, name in enumerate(config.ALL_VANILLA_RELICS)}
+        self.card_to_id = {normalize_game_string(name): idx for idx, name in enumerate(ALL_VANILLA_CARDS)}
+        self.relic_to_id = {normalize_game_string(name): idx for idx, name in enumerate(ALL_VANILLA_RELICS)}
         
         # Exact schema mapping conventions
         self.char_mapping = {"ironclad": 0, "thesilent": 1, "defect": 2, "watcher": 3}
@@ -199,8 +199,8 @@ class SpireCLISession:
         print(f" Floor: {int(self.metrics['floor'])} | Gold: {int(self.metrics['gold'])} | HP Ratio: {self.metrics['hp_ratio']:.2f}")
         print(f" Character ID: {int(self.metrics['character_class'])} | Ascension: {int(self.metrics['ascension_level'])}")
         
-        deck_names = [config.ALL_VANILLA_CARDS[i] for i in self.active_deck if i < len(config.ALL_VANILLA_CARDS)]
-        relic_names = [config.ALL_VANILLA_RELICS[i] for i in self.active_relics if i < len(config.ALL_VANILLA_RELICS)]
+        deck_names = [ALL_VANILLA_CARDS[i] for i in self.active_deck if i < len(ALL_VANILLA_CARDS)]
+        relic_names = [ALL_VANILLA_RELICS[i] for i in self.active_relics if i < len(ALL_VANILLA_RELICS)]
         
         print(f" Deck ({len(deck_names)} cards): {', '.join(deck_names)}")
         print(f" Relics: {', '.join(relic_names)}")
@@ -232,7 +232,7 @@ class SpireCLISession:
             if chosen_action == 'y':
                 if recommended_id > 0:
                     self.active_deck.append(recommended_id)
-                    card_name = config.ALL_VANILLA_CARDS[recommended_id]
+                    card_name = ALL_VANILLA_CARDS[recommended_id]
                     print(f"🤖 Automated Input: Added '{card_name}' into your active deck.")
                 else:
                     print("ℹ️ Note: AI advised a SKIP. No cards were added to your deck.")
@@ -290,7 +290,7 @@ class SpireCLISession:
                         cid = self.parse_item(token, self.card_to_id, "card")
                         if cid is not None:
                             self.active_deck.append(cid)
-                            print(f"  🛒 Added card to deck: {config.ALL_VANILLA_CARDS[cid]}")
+                            print(f"  🛒 Added card to deck: {ALL_VANILLA_CARDS[cid]}")
 
                 # 3. Bulk Relic Purchasing Loop
                 print("\nEnter relics you purchased (separated by commas). Press Enter to skip.")
@@ -300,7 +300,7 @@ class SpireCLISession:
                         rid = self.parse_item(token, self.relic_to_id, "relic")
                         if rid is not None:
                             self.active_relics.append(rid)
-                            print(f"  💎 Added relic to inventory: {config.ALL_VANILLA_RELICS[rid]}")
+                            print(f"  💎 Added relic to inventory: {ALL_VANILLA_RELICS[rid]}")
 
                 # 4. Merchant Card Removal Service
                 print("\nDid you pay the merchant to remove a card from your deck?")
@@ -309,7 +309,7 @@ class SpireCLISession:
                     cid = self.parse_item(card_removed, self.card_to_id, "card")
                     if cid in self.active_deck:
                         self.active_deck.remove(cid)
-                        print(f"  ❌ Removed card from deck: {config.ALL_VANILLA_CARDS[cid]}")
+                        print(f"  ❌ Removed card from deck: {ALL_VANILLA_CARDS[cid]}")
                     elif cid is not None:
                         print("  ❌ Error: That card was not found in your current active deck vector.")
 
@@ -350,7 +350,7 @@ class SpireCLISession:
                     rid = self.parse_item(relic_dropped, self.relic_to_id, "relic")
                     if rid is not None:
                         self.active_relics.append(rid)
-                        print(f"  💎 Added relic to inventory: {config.ALL_VANILLA_RELICS[rid]}")
+                        print(f"  💎 Added relic to inventory: {ALL_VANILLA_RELICS[rid]}")
                 
                 # 4. Integrated Post-Combat Card Drop Rewards Screen
                 print("\n--- Card Reward Screen ---")
@@ -385,13 +385,13 @@ class SpireCLISession:
                 cid = self.parse_item(args, self.card_to_id, "card")
                 if cid is not None:
                     self.active_deck.append(cid)
-                    print(f"✅ Added {config.ALL_VANILLA_CARDS[cid]} to deck list mapping layer.")
+                    print(f"✅ Added {ALL_VANILLA_CARDS[cid]} to deck list mapping layer.")
 
             elif action == "remove-card":
                 cid = self.parse_item(args, self.card_to_id, "card")
                 if cid in self.active_deck:
                     self.active_deck.remove(cid)
-                    print(f"❌ Removed {config.ALL_VANILLA_CARDS[cid]} from session array storage.")
+                    print(f"❌ Removed {ALL_VANILLA_CARDS[cid]} from session array storage.")
                 else:
                     print("❌ Error: Card not found in your current tracked deck.")
 
@@ -399,7 +399,7 @@ class SpireCLISession:
                 rid = self.parse_item(args, self.relic_to_id, "relic")
                 if rid is not None:
                     self.active_relics.append(rid)
-                    print(f"✅ Added {config.ALL_VANILLA_RELICS[rid]} to relic arrays.")
+                    print(f"✅ Added {ALL_VANILLA_RELICS[rid]} to relic arrays.")
             
             elif action == "remove-relic":
                 if not args:
@@ -409,7 +409,7 @@ class SpireCLISession:
                 rid = self.parse_item(args, self.relic_to_id, "relic")
                 if rid in self.active_relics:
                     self.active_relics.remove(rid)
-                    print(f"❌ Removed {config.ALL_VANILLA_RELICS[rid]} from relic tracking arrays.")
+                    print(f"❌ Removed {ALL_VANILLA_RELICS[rid]} from relic tracking arrays.")
                 else:
                     print("❌ Error: That relic was not found in your current active inventory vector.")
             
